@@ -1,0 +1,8 @@
+path: C:/Users/Dell/helmet-detection/data/helmet
+train: images/train
+val: images/val
+test: images/test
+nc: 2
+names:
+- helmet
+- no_helmet

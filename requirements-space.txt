@@ -1,0 +1,13 @@
+# Trimmed dependency set for deploying app.py to Hugging Face Spaces.
+# Excludes dataset-loading / training-only packages (roboflow, kaggle, gdown,
+# huggingface_hub, onnx) that the served app never imports.
+ultralytics>=8.2.0
+opencv-python-headless>=4.9.0
+streamlit>=1.35.0
+pillow>=10.0.0
+numpy>=1.26.0,<2.0.0
+pandas>=2.0.0
+pyyaml>=6.0.1
+onnxruntime>=1.18.0
+streamlit-webrtc>=0.47.0
+plotly>=5.20.0
