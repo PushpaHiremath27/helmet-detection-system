@@ -1,78 +1,132 @@
 import os
-import json
 import time
+import json
 
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
+
+try:
+    from google import genai
+except ImportError:
+    genai = None
 
 
-# ---------------------------------------------------------
-# LOAD API KEY
-# ---------------------------------------------------------
+# ============================================================
+# ENVIRONMENT
+# ============================================================
 
 load_dotenv()
 
 API_KEY = os.getenv("GEMINI_API_KEY")
 
-if not API_KEY:
-    raise RuntimeError(
-        "GEMINI_API_KEY was not found in the .env file."
-    )
-
-
-# ---------------------------------------------------------
-# GEMINI CLIENT
-# ---------------------------------------------------------
-
-client = genai.Client(
-    api_key=API_KEY
-)
-
 MODEL_NAME = "gemini-3.8-flash"
 
 
-# ---------------------------------------------------------
-# GEMINI VERIFICATION
-# ---------------------------------------------------------
+# ============================================================
+# GEMINI CLIENT
+# ============================================================
+
+client = None
+
+if genai is not None and API_KEY:
+
+    try:
+        client = genai.Client(
+            api_key=API_KEY
+        )
+
+    except Exception as error:
+
+        print(
+            "Gemini client initialization failed:",
+            error
+        )
+
+        client = None
+
+
+# ============================================================
+# GEMINI HELMET VERIFICATION
+# ============================================================
 
 def verify_helmet_with_gemini(
-    image_bytes: bytes,
-    mime_type: str,
-    yolo_result: str,
+    image_bytes=None,
+    mime_type="image/jpeg",
+    yolo_status="",
+    **kwargs
 ):
+
+    # --------------------------------------------------------
+    # Support alternative argument names
+    # --------------------------------------------------------
+
+    if image_bytes is None:
+        image_bytes = kwargs.get("image")
+
+    if image_bytes is None:
+        image_bytes = kwargs.get("bytes")
+
+    if not yolo_status:
+        yolo_status = kwargs.get(
+            "yolo_result",
+            kwargs.get("status", "")
+        )
+
+    if not mime_type:
+        mime_type = "image/jpeg"
+
+
+    # --------------------------------------------------------
+    # Check Gemini configuration
+    # --------------------------------------------------------
+
+    if client is None:
+
+        return {
+            "verification": "UNCLEAR",
+            "helmet_status": "UNCLEAR",
+            "confidence": 0,
+            "reason": (
+                "Gemini verification is unavailable. "
+                "Please check GEMINI_API_KEY and Gemini setup."
+            )
+        }
+
+
+    # --------------------------------------------------------
+    # Check image
+    # --------------------------------------------------------
+
+    if image_bytes is None:
+
+        return {
+            "verification": "UNCLEAR",
+            "helmet_status": "UNCLEAR",
+            "confidence": 0,
+            "reason": "No image was provided to Gemini."
+        }
+
+
+    # --------------------------------------------------------
+    # Gemini prompt
+    # --------------------------------------------------------
 
     prompt = f"""
 You are an AI safety verification system.
 
-Analyze the provided motorcycle rider image.
+Analyze the uploaded rider image and determine whether
+the rider is wearing a protective helmet.
 
-Determine whether the rider is:
+YOLO preliminary result:
+{yolo_status}
 
-1. Wearing a protective helmet
-2. Not wearing a protective helmet
-3. Unclear
-
-YOLO produced this result:
-
-{yolo_result}
-
-Independently inspect the image.
-
-Return ONLY valid JSON in this exact format:
+Return ONLY valid JSON using exactly this structure:
 
 {{
-    "verification": "AGREE",
     "helmet_status": "HELMET_DETECTED",
-    "confidence": 0.90,
+    "verification": "AGREE",
+    "confidence": 90,
     "reason": "Short explanation"
 }}
-
-Allowed verification values:
-
-AGREE
-DISAGREE
-UNCLEAR
 
 Allowed helmet_status values:
 
@@ -80,83 +134,198 @@ HELMET_DETECTED
 NO_HELMET_DETECTED
 UNCLEAR
 
-confidence must be between 0.0 and 1.0.
+Allowed verification values:
 
-Do not use markdown.
-Do not use code fences.
+AGREE
+DISAGREE
+UNCLEAR
+
+Rules:
+
+1. HELMET_DETECTED means a protective helmet is clearly visible.
+
+2. NO_HELMET_DETECTED means the rider's head is visible
+   and no protective helmet is visible.
+
+3. UNCLEAR means the image is ambiguous or the rider/head
+   cannot be reliably evaluated.
+
+4. Compare your result with the YOLO preliminary result.
+
+5. Use AGREE when your helmet status agrees with YOLO.
+
+6. Use DISAGREE when your helmet status conflicts with YOLO.
+
+7. Use UNCLEAR when you cannot confidently evaluate the image.
+
+8. Confidence must be a number between 0 and 100.
+
+9. Keep reason short and factual.
 """
 
 
-    # -----------------------------------------------------
-    # RETRY TEMPORARY GEMINI ERRORS
-    # -----------------------------------------------------
+    # --------------------------------------------------------
+    # Gemini request with retries
+    # --------------------------------------------------------
 
-    max_attempts = 3
-
-    for attempt in range(max_attempts):
+    for attempt in range(3):
 
         try:
 
             response = client.models.generate_content(
                 model=MODEL_NAME,
                 contents=[
-                    types.Part.from_text(
-                        text=prompt
-                    ),
-                    types.Part.from_bytes(
-                        data=image_bytes,
-                        mime_type=mime_type,
-                    ),
-                ],
+                    {
+                        "inline_data": {
+                            "mime_type": mime_type,
+                            "data": image_bytes
+                        }
+                    },
+                    prompt
+                ]
             )
 
-            response_text = response.text.strip()
 
-            # Remove accidental markdown code fences
-            if response_text.startswith("```"):
+            # ------------------------------------------------
+            # Read response
+            # ------------------------------------------------
 
-                response_text = (
-                    response_text
-                    .replace("```json", "")
-                    .replace("```", "")
-                    .strip()
+            text = response.text.strip()
+
+
+            # ------------------------------------------------
+            # Remove Markdown JSON fences
+            # ------------------------------------------------
+
+            if text.startswith("```"):
+
+                text = text.replace(
+                    "```json",
+                    ""
                 )
 
-            result = json.loads(
-                response_text
+                text = text.replace(
+                    "```",
+                    ""
+                )
+
+                text = text.strip()
+
+
+            # ------------------------------------------------
+            # Parse JSON
+            # ------------------------------------------------
+
+            result = json.loads(text)
+
+
+            # ------------------------------------------------
+            # Read values
+            # ------------------------------------------------
+
+            helmet_status = str(
+                result.get(
+                    "helmet_status",
+                    "UNCLEAR"
+                )
+            ).upper()
+
+
+            verification = str(
+                result.get(
+                    "verification",
+                    "UNCLEAR"
+                )
+            ).upper()
+
+
+            confidence = float(
+                result.get(
+                    "confidence",
+                    0
+                )
             )
 
-            return result
+
+            reason = str(
+                result.get(
+                    "reason",
+                    ""
+                )
+            )
+
+
+            # ------------------------------------------------
+            # Validate helmet status
+            # ------------------------------------------------
+
+            if helmet_status not in [
+                "HELMET_DETECTED",
+                "NO_HELMET_DETECTED",
+                "UNCLEAR"
+            ]:
+
+                helmet_status = "UNCLEAR"
+
+
+            # ------------------------------------------------
+            # Validate verification
+            # ------------------------------------------------
+
+            if verification not in [
+                "AGREE",
+                "DISAGREE",
+                "UNCLEAR"
+            ]:
+
+                verification = "UNCLEAR"
+
+
+            # ------------------------------------------------
+            # Validate confidence
+            # ------------------------------------------------
+
+            confidence = max(
+                0,
+                min(
+                    100,
+                    confidence
+                )
+            )
+
+
+            # ------------------------------------------------
+            # Return result
+            # ------------------------------------------------
+
+            return {
+                "verification": verification,
+                "helmet_status": helmet_status,
+                "confidence": confidence,
+                "reason": reason
+            }
 
 
         except Exception as error:
 
-            error_text = str(error)
+            print(
+                f"Gemini attempt {attempt + 1} failed:",
+                error
+            )
 
-            # Temporary server overload
-            if "503" in error_text or "UNAVAILABLE" in error_text:
+            if attempt < 2:
+                time.sleep(2)
 
-                if attempt < max_attempts - 1:
 
-                    time.sleep(2)
-
-                    continue
-
-            # Other errors or final retry failure
-            return {
-                "verification": "UNCLEAR",
-                "helmet_status": "UNCLEAR",
-                "confidence": 0.0,
-                "reason": (
-                    f"Gemini verification failed: "
-                    f"{error}"
-                ),
-            }
-
+    # --------------------------------------------------------
+    # Final fallback
+    # --------------------------------------------------------
 
     return {
         "verification": "UNCLEAR",
         "helmet_status": "UNCLEAR",
-        "confidence": 0.0,
-        "reason": "Gemini verification was temporarily unavailable.",
+        "confidence": 0,
+        "reason": (
+            "Gemini verification could not be completed."
+        )
     }
